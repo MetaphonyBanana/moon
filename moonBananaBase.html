@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Moon Banana Base — Site Layout</title>
+<style>
+  :root{
+    --space-black:#0a0c12;
+    --space-black-2:#12141d;
+    --moon-gray:#c7c5bd;
+    --moon-gray-dim:#8a887f;
+    --banana:#f2c14e;
+    --crater-line:#2a2d3a;
+  }
+  *{box-sizing:border-box;}
+  html,body{ margin:0; height:100%; overflow:hidden; background:var(--space-black); font-family:'Courier New', monospace; color:var(--moon-gray); }
+  #scene-canvas{ position:fixed; inset:0; display:block; }
+
+  #panel{
+    position:fixed; top:20px; left:20px;
+    background:rgba(18,20,29,0.85);
+    border:1px solid var(--crater-line);
+    border-radius:10px;
+    padding:14px 16px;
+    max-width:300px;
+    backdrop-filter: blur(4px);
+    z-index:10;
+    line-height:1.6;
+  }
+  #panel h1{ font-size:13px; letter-spacing:0.08em; margin:0 0 8px; color:var(--banana); font-weight:700; text-transform:uppercase; }
+  #panel .line{ font-size:11px; color:var(--moon-gray-dim); }
+  #panel .line b{ color:var(--moon-gray); }
+  #loading{
+    position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+    background:var(--space-black); color:var(--moon-gray-dim); font-size:12px; letter-spacing:0.08em;
+    z-index:50; transition:opacity .4s ease;
+  }
+</style>
+</head>
+<body>
+
+<div id="loading">LOADING BASE MODEL...</div>
+<canvas id="scene-canvas"></canvas>
+
+<div id="panel">
+  <h1>Moon Banana Base — Site Layout</h1>
+  <div class="line">敷地半径: <b id="pad-radius"></b> world units</div>
+  <div class="line">基地モデル倍率: <b id="model-scale"></b></div>
+  <div class="line">ドラッグで視点回転・スクロールでズーム</div>
+  <div class="line"><b>Gキー</b>で地上モード切替(WASDで移動)</div>
+  <div class="line">モード: <b id="mode-label">俯瞰モード</b></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script>
+/* =========================================================
+   基本セットアップ
+   ========================================================= */
+const canvas = document.getElementById('scene-canvas');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputEncoding = THREE.sRGBEncoding;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0c12);
+scene.fog = new THREE.FogExp2(0x0a0c12, 0.028); // 境界を霧でなじませる
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 200);
+camera.position.set(14, 10, 16);
+
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.5, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.minDistance = 6;
+controls.maxDistance = 30;          // 遠すぎて地形の端(未整備)が見えるのを防止
+controls.maxPolarAngle = Math.PI * 0.49;
+controls.update();
+
+// ライティング
+scene.add(new THREE.AmbientLight(0x445066, 0.7));
+const key = new THREE.DirectionalLight(0xfff2cf, 1.2);
+key.position.set(8, 12, 6);
+scene.add(key);
+const rim = new THREE.PointLight(0xf2c14e, 0.5, 20);
+rim.position.set(-6, 4, -4);
+scene.add(rim);
+
+// 星空
+{
+  const starGeo = new THREE.BufferGeometry();
+  const count = 1000;
+  const positions = new Float32Array(count*3);
+  for(let i=0;i<count;i++){
+    const r = 40 + Math.random()*50;
+    const theta = Math.random()*Math.PI*2;
+    const phi = Math.acos((Math.random()*2)-1);
+    positions[i*3]   = r*Math.sin(phi)*Math.cos(theta);
+    positions[i*3+1] = Math.abs(r*Math.cos(phi))*0.6 + 3;
+    positions[i*3+2] = r*Math.sin(phi)*Math.sin(theta);
+  }
+  starGeo.setAttribute('position', new THREE.BufferAttribute(positions,3));
+  scene.add(new THREE.Points(starGeo, new THREE.PointsMaterial({ color:0xffffff, size:0.07, transparent:true, opacity:0.85 })));
+}
+
+/* =========================================================
+   地形プレースホルダー(本番のクレーターDEMに差し替え予定)
+   ========================================================= */
+const WORLD_SIZE = 40;
+const BUILD_PAD_RADIUS = Math.sqrt((WORLD_SIZE ** 2 / 8) / Math.PI);
+
+// 敷地(ビルドパッド)の可視化リング(先に作っておき、地形完成後に高さだけ合わせる)
+const padRingGeo = new THREE.RingGeometry(BUILD_PAD_RADIUS - 0.06, BUILD_PAD_RADIUS, 96);
+const padRingMat = new THREE.MeshBasicMaterial({ color:0xf2c14e, transparent:true, opacity:0.4, side:THREE.DoubleSide });
+const padRing = new THREE.Mesh(padRingGeo, padRingMat);
+padRing.rotation.x = -Math.PI/2;
+padRing.position.y = 0.015;
+scene.add(padRing);
+
+document.getElementById('pad-radius').textContent = BUILD_PAD_RADIUS.toFixed(2);
+
+function isWithinBuildPad(x, z){
+  return Math.sqrt(x*x + z*z) <= BUILD_PAD_RADIUS;
+}
+
+/* ---------------------------------------------------------
+   地形構築: displacementMapはGPU側のみでRaycasterに反映されないため、
+   ハイトマップの画素値をCPU側で読み取り、ジオメトリの頂点自体を変形する。
+   同じサンプリング関数を getTerrainHeightAt() でも使うので、
+   見た目と当たり判定が必ず一致する。
+   --------------------------------------------------------- */
+const TERRAIN_SEGMENTS = 256; // CPU側で処理するため、GPU版より少なめが目安
+const DISPLACEMENT_SCALE = 2; // 前回確認した値。地形が破綻したら調整
+
+let ground = null;
+let terrainSample = null; // { data, w, h } を保持
+const pendingOnTerrainReady = [];
+
+function sampleHeightBilinear(u, v){
+  if (!terrainSample) return 0;
+  const { data, w, h } = terrainSample;
+  const uu = Math.min(Math.max(u, 0), 1);
+  const vv = 1 - Math.min(Math.max(v, 0), 1); // PlaneGeometryのUV(v=0が下/v=1が上)とPNGの行順(上から0行目)の向きを合わせる
+  const x = uu * (w - 1);
+  const y = vv * (h - 1);
+  const x0 = Math.floor(x), x1 = Math.min(x0 + 1, w - 1);
+  const y0 = Math.floor(y), y1 = Math.min(y0 + 1, h - 1);
+  const fx = x - x0, fy = y - y0;
+  const get = (xx, yy) => data[(yy * w + xx) * 4]; // グレースケールPNGはR=G=B想定なのでRチャンネルのみ使用
+  const top = get(x0, y0) * (1 - fx) + get(x1, y0) * fx;
+  const bottom = get(x0, y1) * (1 - fx) + get(x1, y1) * fx;
+  return (top * (1 - fy) + bottom * fy) / 255; // 0-1に正規化
+}
+
+// world座標 → PlaneGeometryのUVへの変換(下のbuildTerrainでの頂点配置と対応させる)
+function worldToUV(x, z){
+  return { u: (x / WORLD_SIZE) + 0.5, v: 0.5 - (z / WORLD_SIZE) };
+}
+
+function getTerrainHeightAt(x, z){
+  if (!terrainSample) return 0;
+  const { u, v } = worldToUV(x, z);
+  return sampleHeightBilinear(u, v) * DISPLACEMENT_SCALE;
+}
+
+function buildTerrain(heightImg, albedoTexture){
+  const w = heightImg.width, h = heightImg.height;
+  const cvs = document.createElement('canvas');
+  cvs.width = w; cvs.height = h;
+  const cctx = cvs.getContext('2d');
+  cctx.drawImage(heightImg, 0, 0);
+  terrainSample = { data: cctx.getImageData(0, 0, w, h).data, w, h };
+
+  const geo = new THREE.PlaneGeometry(WORLD_SIZE, WORLD_SIZE, TERRAIN_SEGMENTS, TERRAIN_SEGMENTS);
+  const uvAttr = geo.attributes.uv;
+  const posAttr = geo.attributes.position;
+  for (let i = 0; i < posAttr.count; i++){
+    const u = uvAttr.getX(i);
+    const v = uvAttr.getY(i);
+    posAttr.setZ(i, sampleHeightBilinear(u, v) * DISPLACEMENT_SCALE); // 回転後、このローカルZが世界のYになる
+  }
+  posAttr.needsUpdate = true;
+  geo.computeVertexNormals();
+
+  const mat = new THREE.MeshStandardMaterial({
+    map: albedoTexture,
+    roughness: 0.97,
+    metalness: 0.03,
+  });
+
+  ground = new THREE.Mesh(geo, mat);
+  ground.rotation.x = -Math.PI / 2;
+  scene.add(ground);
+
+  // 敷地リングの高さを地形(ほぼ平坦のはず)に合わせる
+  padRing.position.y = getTerrainHeightAt(0, 0) + 0.02;
+
+  pendingOnTerrainReady.forEach(fn => fn());
+  pendingOnTerrainReady.length = 0;
+}
+
+// --- 読み込み: ハイトマップ(画素アクセスのため素のImageで) + 月面画像(GPUテクスチャ) ---
+const textureLoader = new THREE.TextureLoader();
+let albedoTextureLoaded = null;
+let heightImgLoaded = null;
+
+function tryBuildTerrain(){
+  if (albedoTextureLoaded && heightImgLoaded) {
+    buildTerrain(heightImgLoaded, albedoTextureLoaded);
+  }
+}
+
+textureLoader.load('./schrodinger_albedo.png', (tex) => {
+  tex.encoding = THREE.sRGBEncoding;
+  albedoTextureLoaded = tex;
+  tryBuildTerrain();
+}, undefined, (err) => console.error('月面画像の読み込みエラー:', err));
+
+const heightImgEl = new Image();
+heightImgEl.onload = () => { heightImgLoaded = heightImgEl; tryBuildTerrain(); };
+heightImgEl.onerror = (err) => console.error('ハイトマップの読み込みエラー:', err);
+heightImgEl.src = './schrodinger_heightmap_padded.png';
+
+/* =========================================================
+   基地モデル(banana-base.glb)の読み込みと配置
+   ========================================================= */
+// pygltflibでの解析結果(メッシュのローカルbbox × ノードのtranslation/scaleを反映済み。差し替え時は要再計測)
+const MODEL_BOUNDS = {
+  min: [-6.276481512069702, -0.02561154961585999, -5.357624340256799],
+  max: [5.938730429401755, 7.071377098590136, 8.189352572704883],
+};
+const modelSize = MODEL_BOUNDS.max.map((v,i) => v - MODEL_BOUNDS.min[i]);
+const modelMaxDim = Math.max(modelSize[0], modelSize[2]); // 横幅・奥行きの大きい方を基準にする
+
+const TARGET_FOOTPRINT = (BUILD_PAD_RADIUS * 2) / 10; // 敷地(直径)の1/10
+const MODEL_SCALE = TARGET_FOOTPRINT / modelMaxDim;
+document.getElementById('model-scale').textContent = MODEL_SCALE.toFixed(4);
+
+// 配置データ(位置は仮。敷地内であればOK)
+const BASE_PLACEMENT = { x: 2.2, z: -1.5, rotationY: 0.5 };
+
+if (!isWithinBuildPad(BASE_PLACEMENT.x, BASE_PLACEMENT.z)) {
+  console.warn('基地の配置座標が敷地範囲外です:', BASE_PLACEMENT);
+}
+
+const loader = new THREE.GLTFLoader();
+let gltfModelScene = null;
+
+function placeBaseModel(){
+  const inner = gltfModelScene;
+
+  // モデルのローカル中心(x,z)と底面(y)を原点に合わせる
+  const centerX = (MODEL_BOUNDS.min[0] + MODEL_BOUNDS.max[0]) / 2;
+  const centerZ = (MODEL_BOUNDS.min[2] + MODEL_BOUNDS.max[2]) / 2;
+  const bottomY = MODEL_BOUNDS.min[1];
+  inner.position.set(-centerX, -bottomY, -centerZ);
+
+  const wrapper = new THREE.Group();
+  wrapper.add(inner);
+  wrapper.scale.setScalar(MODEL_SCALE);
+
+  const groundY = getTerrainHeightAt(BASE_PLACEMENT.x, BASE_PLACEMENT.z); // 地形完成後なので正しい高さが取れる
+  wrapper.position.set(BASE_PLACEMENT.x, groundY, BASE_PLACEMENT.z);
+  wrapper.rotation.y = BASE_PLACEMENT.rotationY;
+
+  scene.add(wrapper);
+
+  document.getElementById('loading').style.opacity = '0';
+  setTimeout(() => { document.getElementById('loading').style.display = 'none'; }, 400);
+}
+
+loader.load('./banana-base.glb', (gltf) => {
+  gltfModelScene = gltf.scene;
+  if (terrainSample) {
+    placeBaseModel(); // 地形が先に準備できていれば即配置
+  } else {
+    pendingOnTerrainReady.push(placeBaseModel); // まだなら地形完成後に配置
+  }
+}, undefined, (err) => {
+  console.error('モデル読み込みエラー:', err);
+  document.getElementById('loading').textContent = 'モデルの読み込みに失敗しました(コンソール参照)';
+});
+
+/* =========================================================
+   地上モード(WASD移動)
+   ========================================================= */
+const EYE_HEIGHT = 0.5;   // 地面から目線までの高さ(world units)
+const MOVE_SPEED = 6;     // units/sec
+const keys = {};
+let walkMode = false;
+const clock = new THREE.Clock();
+
+window.addEventListener('keydown', (e) => {
+  keys[e.code] = true;
+  if (e.code === 'KeyG') toggleWalkMode();
+});
+window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+function toggleWalkMode(){
+  walkMode = !walkMode;
+  document.getElementById('mode-label').textContent = walkMode ? '地上モード(WASDで移動)' : '俯瞰モード';
+  if (walkMode) {
+    // カメラを現在のXZ位置のまま、地面+目線の高さへスナップ
+    const groundY = getTerrainHeightAt(camera.position.x, camera.position.z);
+    camera.position.y = groundY + EYE_HEIGHT;
+    controls.target.copy(camera.position);
+    controls.target.z -= 1; // 前方に仮の注視点を置く
+    // OrbitControlsを「その場で見回すだけ」の一人称的な挙動にする
+    controls.minDistance = 0.01;
+    controls.maxDistance = 0.01;
+    controls.enablePan = false;
+  } else {
+    // 俯瞰モードに戻す(通常の距離制限に復帰)
+    controls.minDistance = 6;
+    controls.maxDistance = 30;
+  }
+}
+
+function updateWalkMovement(delta){
+  if (!walkMode) return;
+
+  const forward = new THREE.Vector3();
+  camera.getWorldDirection(forward);
+  forward.y = 0;
+  forward.normalize();
+  const right = new THREE.Vector3().crossVectors(forward, camera.up).normalize();
+
+  const move = new THREE.Vector3();
+  if (keys['KeyW']) move.add(forward);
+  if (keys['KeyS']) move.sub(forward);
+  if (keys['KeyD']) move.add(right);
+  if (keys['KeyA']) move.sub(right);
+
+  if (move.lengthSq() > 0){
+    move.normalize().multiplyScalar(MOVE_SPEED * delta);
+    camera.position.add(move);
+  }
+
+  // 常に地形の高さ+目線の高さにスナップ(地面を歩いているように見せる)
+  const groundY = getTerrainHeightAt(camera.position.x, camera.position.z);
+  camera.position.y = groundY + EYE_HEIGHT;
+
+  // 注視点をカメラのすぐ前方に保つ(OrbitControlsを疑似FPS視点として使うためのハック)
+  controls.target.copy(camera.position).addScaledVector(forward, 0.01);
+}
+
+/* =========================================================
+   ループ・リサイズ
+   ========================================================= */
+function animate(){
+  requestAnimationFrame(animate);
+  const delta = clock.getDelta();
+  updateWalkMovement(delta);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>
